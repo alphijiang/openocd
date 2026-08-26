@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "target/target.h"
 #include "target/algorithm.h"
@@ -3830,7 +3831,39 @@ mem_should_skip_abstract(struct target *target, const struct riscv_mem_access_ar
 	}
 	return mem_access_result(MEM_ACCESS_OK);
 }
+/*
+ * VeeR EH2 ICCM limitation:
+ *
+ * Abstract Memory Access to ICCM supports 32-bit accesses only.
+ * GDB may issue 8/16-bit reads while decoding RVC instructions.
+ *
+ * Temporary EH2 compatibility workaround.
+ *
+ * NOTE:
+ * ICCM location/size is configurable in EH2, so these constants
+ * should eventually be moved to target configuration.
+ */
+#define EH2_ICCM_START  ((target_addr_t)0xEE000000ULL)
+#define EH2_ICCM_END    ((target_addr_t)0xEEFFFFFFULL)
 
+static bool eh2_iccm_needs_word_access(
+		const struct riscv_mem_access_args args)
+{
+	if (args.count == 0)
+		return false;
+
+	target_addr_t last =
+		args.address +
+		(target_addr_t)(args.count - 1) * args.increment +
+		args.size - 1;
+
+	if (last < args.address ||
+			args.address < EH2_ICCM_START || last > EH2_ICCM_END)
+		return false;
+
+	/* A naturally aligned 32-bit access is already valid for EH2 ICCM. */
+	return args.size != 4 || args.increment != 4 || (args.address & 3);
+}
 /*
  * Performs a memory read using memory access abstract commands. The read sizes
  * supported are 1, 2, and 4 bytes despite the spec's support of 8 and 16 byte
@@ -3842,6 +3875,57 @@ read_memory_abstract(struct target *target, const struct riscv_mem_access_args a
 	assert(riscv_mem_access_is_read(args));
 
 	memset(args.read_buffer, 0, args.count * args.size);
+
+	/*
+	 * EH2 ICCM only accepts aligned 32-bit Abstract Memory Access.
+	 * Convert any other logical debugger read into one or more aligned
+	 * 32-bit transactions while preserving the original address/size.
+	 */
+	if (eh2_iccm_needs_word_access(args)) {
+		LOG_TARGET_DEBUG(target,
+				"EH2 ICCM: converting %u-bit abstract read "
+				"at 0x%" TARGET_PRIxADDR " to 32-bit access",
+				args.size * 8, args.address);
+
+		for (uint32_t c = 0; c < args.count; ++c) {
+			target_addr_t element_addr =
+				args.address + (target_addr_t)c * args.increment;
+
+			bool have_word = false;
+			target_addr_t cached_addr = 0;
+			uint8_t word[4];
+
+			for (unsigned int i = 0; i < args.size; ++i) {
+				target_addr_t byte_addr = element_addr + i;
+				target_addr_t aligned_addr =
+					byte_addr & ~((target_addr_t)3);
+
+				if (!have_word || aligned_addr != cached_addr) {
+					const struct riscv_mem_access_args word_args = {
+						.address = aligned_addr,
+						.read_buffer = word,
+						.size = 4,
+						.count = 1,
+						.increment = 4,
+					};
+
+					struct mem_access_result result =
+						read_memory_abstract(target, word_args);
+
+					if (!is_mem_access_ok(result))
+						return result;
+
+					cached_addr = aligned_addr;
+					have_word = true;
+				}
+
+				args.read_buffer[c * args.size + i] =
+					word[byte_addr & 3];
+			}
+		}
+
+		return mem_access_result(MEM_ACCESS_OK);
+	}
 
 	/* Convert the size (bytes) to width (bits) */
 	unsigned int width = args.size << 3;
@@ -3917,6 +4001,79 @@ static struct mem_access_result
 write_memory_abstract(struct target *target, const struct riscv_mem_access_args args)
 {
 	assert(riscv_mem_access_is_write(args));
+
+	/*
+	 * VeeR EH2 ICCM only accepts aligned 32-bit Abstract Memory Access.
+	 * Convert arbitrary logical writes into aligned 32-bit transactions.
+	 * Partial words use read-modify-write; full aligned words are written
+	 * directly. This also covers RV32IMAC 32-bit instructions starting at
+	 * a halfword boundary.
+	 */
+	if (eh2_iccm_needs_word_access(args)) {
+		LOG_TARGET_DEBUG(target,
+				"EH2 ICCM: converting %u-bit abstract write "
+				"at 0x%" TARGET_PRIxADDR " to aligned 32-bit access",
+				args.size * 8, args.address);
+
+		for (uint32_t c = 0; c < args.count; ++c) {
+			target_addr_t element_addr =
+				args.address + (target_addr_t)c * args.increment;
+			unsigned int done = 0;
+
+			while (done < args.size) {
+				target_addr_t addr = element_addr + done;
+				target_addr_t aligned_addr = addr & ~((target_addr_t)3);
+				unsigned int offset = (unsigned int)(addr & 3);
+				unsigned int chunk = MIN(4U - offset, args.size - done);
+				const uint8_t *src = args.write_buffer + c * args.size + done;
+				struct mem_access_result result;
+
+				if (offset == 0 && chunk == 4) {
+					const struct riscv_mem_access_args write_args = {
+						.address = aligned_addr,
+						.write_buffer = src,
+						.size = 4,
+						.count = 1,
+						.increment = 4,
+					};
+
+					result = write_memory_abstract(target, write_args);
+				} else {
+					uint8_t word[4];
+					const struct riscv_mem_access_args read_args = {
+						.address = aligned_addr,
+						.read_buffer = word,
+						.size = 4,
+						.count = 1,
+						.increment = 4,
+					};
+
+					result = read_memory_abstract(target, read_args);
+					if (!is_mem_access_ok(result))
+						return result;
+
+					memcpy(word + offset, src, chunk);
+
+					const struct riscv_mem_access_args write_args = {
+						.address = aligned_addr,
+						.write_buffer = word,
+						.size = 4,
+						.count = 1,
+						.increment = 4,
+					};
+
+					result = write_memory_abstract(target, write_args);
+				}
+
+				if (!is_mem_access_ok(result))
+					return result;
+
+				done += chunk;
+			}
+		}
+
+		return mem_access_result(MEM_ACCESS_OK);
+	}
 
 	int result = ERROR_OK;
 
@@ -4596,9 +4753,16 @@ access_memory_abstract(struct target *target, const struct riscv_mem_access_args
 {
 	assert(riscv_mem_access_is_valid(args));
 
-	struct mem_access_result skip_reason = mem_should_skip_abstract(target, args);
-	if (!is_mem_access_ok(skip_reason))
-		return skip_reason;
+	/*
+	 * EH2 ICCM logical accesses are translated below to aligned 32-bit
+	 * transactions, so do not reject them based on the generic abstract
+	 * command size/increment restrictions.
+	 */
+	if (!eh2_iccm_needs_word_access(args)) {
+		struct mem_access_result skip_reason = mem_should_skip_abstract(target, args);
+		if (!is_mem_access_ok(skip_reason))
+			return skip_reason;
+	}
 
 	const bool is_read = riscv_mem_access_is_read(args);
 	const char *const access_type = is_read ? "reading" : "writing";
