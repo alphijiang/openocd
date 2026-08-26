@@ -1,359 +1,182 @@
-# Welcome to OpenOCD
+# OpenOCD VeeR/SweRV ICCM Compatibility Patch
 
-OpenOCD provides on-chip programming and debugging support with a
-layered architecture of JTAG interface and TAP support including:
+Minimal compatibility changes for using current upstream OpenOCD with VeeR/SweRV cores whose ICCM accepts **32-bit Abstract Memory Access only**.
 
-- (X)SVF playback to facilitate automated boundary scan and FPGA/CPLD
-  programming;
-- debug target support (e.g. ARM, MIPS): single-stepping,
-  breakpoints/watchpoints, gprof profiling, etc;
-- flash chip drivers (e.g. CFI, NAND, internal flash);
-- embedded Tcl interpreter for easy scripting.
+The goal of this repository is deliberately narrow: keep upstream OpenOCD behavior intact and add only the ICCM access adaptation required to remove misleading memory-access errors during normal GDB/Eclipse debugging.
 
-Several network interfaces are available for interacting with OpenOCD:
-telnet, Tcl, and GDB. The GDB server enables OpenOCD to function as a
-"remote target" for source-level debugging of embedded systems using
-the GNU GDB program (and the others who talk GDB protocol, e.g. IDA
-Pro).
+## Base OpenOCD version
 
-This README file contains an overview of the following topics:
+Validated against:
 
-- quickstart instructions,
-- how to find and build more OpenOCD documentation,
-- list of the supported hardware,
-- the installation and build process,
-- packaging tips.
-
-## Quickstart for the impatient
-
-If you have a popular board then just start OpenOCD with its config,
-e.g.:
-
-```sh
-openocd -f board/stm32f4discovery.cfg
+```text
+Open On-Chip Debugger 0.12.0+dev-02633-g2741efc60 (2026-08-24-02:40)
 ```
 
-If you are connecting a particular adapter with some specific target,
-you need to source both the jtag interface and the target configs,
-e.g.:
+The tested OpenOCD binary reported commit:
 
-```sh
-openocd -f interface/ftdi/jtagkey2.cfg -c "transport select jtag" \
-        -f target/ti/calypso.cfg
+```text
+g2741efc60
 ```
 
-```sh
-openocd -f interface/stlink.cfg -c "transport select swd" \
-        -f target/stm32l0.cfg
+When rebasing this patch onto a newer OpenOCD revision, compare `src/target/riscv/riscv-013.c` first and rerun the regression tests in `docs/TESTING.md`.
+
+## Why this patch exists
+
+The generic OpenOCD RISC-V 0.13 backend maps the debugger-requested element size directly to the RISC-V Debug Module Abstract Memory `AAMSIZE` field.
+
+For example:
+
+```text
+GDB read16
+    -> args.size = 2
+    -> OpenOCD AAMSIZE = 16-bit
+    -> ICCM rejects the transaction
+    -> abstractcs.cmderr
+    -> OpenOCD prints a visible memory access error
 ```
 
-After OpenOCD startup, connect GDB with
+On the tested VeeR/SweRV ICCM implementation, an aligned 32-bit Abstract Memory access succeeds while a 16-bit ICCM Abstract Memory access fails.
 
-```gdb
-(gdb) target extended-remote localhost:3333
+This can be especially visible with Eclipse/CDT because normal source-level debugging may generate sub-word ICCM reads/writes while decoding instructions, inserting software breakpoints, refreshing disassembly, or restoring breakpoint contents.
+
+In many cases debugging still continues correctly after these messages, but the repeated `Error:` output strongly suggests a broken target or unstable debug connection. This patch changes the transaction itself instead of hiding the log message.
+
+## What is changed
+
+Only the RISC-V Debug 0.13 memory backend is modified:
+
+```text
+src/target/riscv/riscv-013.c
 ```
 
-## Installing OpenOCD
+The compatibility rule is:
 
-The easiest way to install OpenOCD is through your operating system's package
-manager.
-
-- Debian / Ubuntu
-
-  ```sh
-  sudo apt install openocd
-  ```
-
-- Fedora
-
-  ```sh
-  sudo dnf install openocd
-  ```
-
-- macOS (via Homebrew)
-
-  ```sh
-  brew install open-ocd
-  ```
-
-- Windows (via MSYS2)
-
-  ```sh
-  pacman -S mingw-w64-x86_64-openocd
-  ```
-
-These packages are often more stable than the bleeding-edge Git mainline, where
-active development happens.
-"Packagers" create binary releases of OpenOCD after the developers publish new
-source code releases.
-Older OpenOCD versions are not suitable for diagnosing issues in the current
-release.
-Users should stay in touch with their distribution maintainers or interface
-vendors to ensure that appropriate updates are provided regularly.
-
-If you use one of these binary packages, you must contact the Packager for
-support or for newer binary versions.
-The OpenOCD developers do not provide direct support for packaged binaries.
-
-## A Note to OpenOCD Packagers
-
-You are a PACKAGER of OpenOCD if you:
-
-- Sell dongles and include pre-built binaries;
-- Supply tools or IDEs (a development solution integrating OpenOCD);
-- Build packages (e.g. RPM or DEB files for a GNU/Linux distribution).
-
-As a PACKAGER, you will experience first reports of most issues.
-When you fix those problems for your users, your solution may help
-prevent hundreds (if not thousands) of other questions from other users.
-
-If something does not work for you, please work to inform the OpenOCD
-developers know how to improve the system or documentation to avoid
-future problems, and follow-up to help us ensure the issue will be fully
-resolved in our future releases.
-
-That said, the OpenOCD developers would also like you to follow a few
-suggestions:
-
-- Send patches, including config files, upstream, participate in the
-  discussions;
-- Enable all the options OpenOCD supports, even those unrelated to your
-  particular hardware;
-- Use "ftdi" interface adapter driver for the FTDI-based devices.
-
-## OpenOCD Documentation
-
-In addition to the in-tree documentation, the latest manuals may be
-viewed online at the following URLs:
-
-- OpenOCD User's Guide: <http://openocd.org/doc/html/index.html>
-
-- OpenOCD Developer's Manual: <http://openocd.org/doc/doxygen/html/index.html>
-
-These reflect the latest development versions, so the following section
-introduces how to build the complete documentation from the package.
-
-For more information, refer to these documents or contact the developers
-by subscribing to the OpenOCD developer mailing list: openocd-devel@lists.sourceforge.net
-
-### Building the OpenOCD Documentation
-
-By default the OpenOCD build process prepares documentation in the
-"Info format" and installs it the standard way, so that `info openocd`
-can access it.
-
-Additionally, the OpenOCD User's Guide can be produced in the
-following different formats:
-
-If `PDFVIEWER` is set, this creates and views the PDF User Guide.
-
-```sh
-make pdf && ${PDFVIEWER} doc/openocd.pdf
+```text
+Debugger logical ICCM access
+        |
+        v
+VeeR/SweRV ICCM adapter
+        |
+        v
+aligned 32-bit Abstract Memory transactions only
 ```
 
-If `HTMLVIEWER` is set, this creates and views the HTML User Guide.
+Reads are reconstructed from one or more aligned 32-bit words.
 
-```sh
-make html && ${HTMLVIEWER} doc/openocd.html/index.html
+Partial writes use 32-bit read-modify-write so bytes outside the logical debugger request are preserved.
+
+Naturally aligned 32-bit ICCM accesses continue through the original upstream path.
+
+Non-ICCM memory continues through the original upstream behavior.
+
+## Scope
+
+This repository intentionally does **not** attempt to reproduce the historical `swerv-openocd` fork.
+
+It does not add a new debugger architecture, new GDB protocol, or large VeeR-specific command layer. The purpose is to keep the maintenance surface small and compatible with modern upstream OpenOCD.
+
+The current patch is intended for the following observed behavior:
+
+- RISC-V Debug Module 0.13 memory access
+- VeeR/SweRV ICCM requiring aligned 32-bit Abstract Memory transactions
+- GDB/Eclipse sub-word ICCM reads and writes
+- RV32IMAC software-breakpoint workflows
+
+## Current limitations
+
+### ICCM address range is currently hard-coded
+
+The current source uses:
+
+```c
+#define EH2_ICCM_START  ((target_addr_t)0xEE000000ULL)
+#define EH2_ICCM_END    ((target_addr_t)0xEEFFFFFFULL)
 ```
 
-The OpenOCD Developer Manual contains information about the internal
-architecture and other details about the code:
+This is a temporary compatibility range, not a general VeeR memory-map discovery mechanism.
 
-Note: make sure doxygen is installed, type doxygen --version
+ICCM location and size are build-configurable and may differ between SoC configurations. Before using this patch on another design, adjust the range to match the actual hardware configuration.
 
-```sh
-make doxygen && ${HTMLVIEWER} doxygen/index.html
+A future implementation could move this information to target configuration instead of keeping it in `riscv-013.c`, but that is intentionally outside the current minimal patch scope.
+
+### ICCM only
+
+The patch is not applied globally to RAM/DCCM/SoC memory. Those regions may support 8/16/32-bit accesses normally and should continue using upstream OpenOCD behavior.
+
+### Debug access, not CPU load/store behavior
+
+This patch changes debugger-side Abstract Memory transactions only. It does not modify the CPU ISA, instruction execution, ICCM hardware, or normal application load/store behavior.
+
+### Read-modify-write is a debug-time operation
+
+Partial ICCM writes require a read-modify-write sequence. The target is expected to be halted during Abstract Memory access, so this is acceptable for debugger use. It should not be treated as an atomic run-time memory primitive.
+
+### Instruction-cache/fetch synchronization is separate
+
+Some VeeR/SweRV configurations require an explicit debug-memory synchronization action after modifying instruction memory before resume. That target-specific synchronization is separate from this ICCM width adaptation and may be handled in the OpenOCD target configuration.
+
+## Files
+
+```text
+README.md
+patches/
+  riscv-013_eh2.patch       patch against the tested OpenOCD source
+src/
+  riscv-013.c               patched reference source
+docs/
+  DESIGN.md                 code path and design rationale
+  TESTING.md                regression procedure
+  INTEGRATION.md            how to apply/build/use the patch
+  MAINTENANCE.md            rebase and release workflow
 ```
 
-## Supported hardware
+## Quick integration
 
-### JTAG adapters
+From an OpenOCD source tree matching the base revision:
 
-AM335x, ARM-JTAG-EW, ARM-USB-OCD, ARM-USB-TINY, AT91RM9200, axm0432, BCM2835,
-Bus Blaster, Buspirate, Cadence DPI, Cadence vdebug, Chameleon, CMSIS-DAP,
-Cortino, Cypress KitProg, DENX, Digilent JTAG-SMT2, DLC 5, DLP-USB1232H,
-embedded projects, Espressif USB JTAG Programmer,
-eStick, FlashLINK, FlossJTAG, Flyswatter, Flyswatter2,
-FTDI FT232R, Gateworks, Hoegl, ICDI, ICEBear, J-Link, JTAG VPI, JTAGkey,
-JTAGkey2, JTAG-lock-pick, KT-Link, Linux GPIOD, Lisa/L, LPC1768-Stick,
-Mellanox rshim, MiniModule, NGX, Nuvoton Nu-Link, Nu-Link2, NXHX, NXP IMX GPIO,
-OOCDLink, Opendous, OpenJTAG, Openmoko, OpenRD, OSBDM, Presto, Redbee,
-Remote Bitbang, RLink, SheevaPlug devkit, Stellaris evkits,
-ST-LINK (SWO tracing supported), STM32-PerformanceStick, STR9-comStick,
-sysfsgpio, Tigard, TI XDS110, TUMPA, Turtelizer, ULINK, USB-A9260, USB-Blaster,
-USB-JTAG, USBprog, VPACLink, VSLLink, Wiggler, XDS100v2, Xilinx XVC/PCIe,
-Xverve.
-
-### Debug targets
-
-ARM: AArch64, ARM11, ARM7, ARM9, Cortex-A/R (v7-A/R), Cortex-M (ARMv{6/7/8}-M),
-FA526, Feroceon/Dragonite, XScale.
-ARCv2, AVR32, DSP563xx, DSP5680xx, EnSilica eSi-RISC, EJTAG (MIPS32, MIPS64),
-ESP32, ESP32-S2, ESP32-S3, Intel Quark, LS102x-SAP, RISC-V, ST STM8,
-Xtensa.
-
-### Flash drivers
-
-ADUC702x, AT91SAM, AT91SAM9 (NAND), ATH79, ATmega128RFA1, Atmel SAM, AVR, CFI,
-DSP5680xx, EFM32, EM357, eSi-RISC, eSi-TSMC, EZR32HG, FM3, FM4, Freedom E SPI,
-GD32, i.MX31, Kinetis, LPC8xx/LPC1xxx/LPC2xxx/LPC541xx, LPC2900, LPC3180, LPC32xx,
-LPCSPIFI, Marvell QSPI, MAX32, Milandr, MXC, NIIET, nRF51, nRF52 , NuMicro,
-NUC910, Nuvoton NPCX, onsemi RSL10, Orion/Kirkwood, PIC32mx, PSoC4/5LP/6,
-Raspberry RP2040, Renesas RPC HF and SH QSPI,
-S3C24xx, S3C6400, SiM3x, SiFive Freedom E, Stellaris, ST BlueNRG, STM32,
-STM32 QUAD/OCTO-SPI for Flash/FRAM/EEPROM, STMSMI, STR7x, STR9x, SWM050,
-TI CC13xx, TI CC26xx, TI CC32xx, TI MSP432, Winner Micro w600, Xilinx XCF,
-XMC1xxx, XMC4xxx.
-
-## Building OpenOCD
-
-The INSTALL file contains generic instructions for running `configure`
-and compiling the OpenOCD source code. That file is provided by
-default for all GNU autotools packages. If you are not familiar with
-the GNU autotools, then you should read those instructions first.
-
-Note: if the INSTALL file is not present, it means you are using the
-source code from a development branch, not from an OpenOCD release.
-In this case, follow the instructions 'Compiling OpenOCD' below and
-the file will be created by the first command `./bootstrap`.
-
-The remainder of this document tries to provide some instructions for
-those looking for a quick-install.
-
-### OpenOCD Dependencies
-
-GCC or Clang is currently required to build OpenOCD. The developers
-have begun to enforce strict code warnings (-Wall, -Werror, -Wextra,
-and more) and use C99-specific features: inline functions, named
-initializers, mixing declarations with code, and other tricks. While
-it may be possible to use other compilers, they must be somewhat
-modern and could require extending support to conditionally remove
-GCC-specific extensions.
-
-You'll also need:
-
-- make
-- libtool
-- pkg-config >= 0.23 or pkgconf
-- libjim >= 0.79
-
-Additionally, for building from Git:
-
-- autoconf >= 2.69
-- automake >= 1.14
-- texinfo >= 5.0
-
-Optional USB-based adapter drivers need libusb-1.0.
-
-Optional USB-Blaster, ASIX Presto and OpenJTAG interface adapter drivers need
-[libftdi](http://www.intra2net.com/en/developer/libftdi/index.php) library.
-
-Optional CMSIS-DAP adapter driver needs HIDAPI library.
-
-Optional linuxgpiod adapter driver needs libgpiod library.
-
-Optional J-Link adapter driver needs libjaylink library.
-
-Optional ARM disassembly needs capstone library.
-
-Optional development script checkpatch needs:
-
-- perl
-- python
-- python-ply
-- pymarkdownlnt
-
-### Compiling OpenOCD
-
-To build OpenOCD, use the following sequence of commands:
-
-```sh
-./bootstrap
-./configure [options]
-make
-sudo make install
+```bash
+git checkout 2741efc60
+git apply /path/to/patches/riscv-013_eh2.patch
 ```
 
-The `bootstrap` command is only necessary when building from the Git repository.
-The `configure` step generates the Makefiles required to build OpenOCD, usually
-with one or more options provided to it.
-The first 'make' step will build OpenOCD and place the final executable in './src/'.
-The final (optional) step, `make install`, places all of the files in the
-required location.
+Build OpenOCD using your normal upstream build procedure, then confirm:
 
-To see the list of all the supported options, run `./configure --help`
-
-### Cross-compiling Options
-
-Cross-compiling is supported the standard autotools way, you just need
-to specify the cross-compiling target triplet in the --host option,
-e.g. for cross-building for Windows 32-bit with MinGW on Debian:
-
-```sh
-./configure --host=i686-w64-mingw32 [options]
+```bash
+openocd --version
 ```
 
-To make pkg-config work nicely for cross-compiling, you might need an additional
-wrapper script as described at <https://autotools.io/pkgconfig/cross-compiling.html>.
+The important regression is not merely that OpenOCD starts. Test ICCM 32-bit and sub-word accesses and a repeated software-breakpoint workflow as described in `docs/TESTING.md`.
 
-This is needed to tell pkg-config where to look for the target
-libraries that OpenOCD depends on. Alternatively, you can specify
-`*_CFLAGS` and `*_LIBS` environment variables directly, see `./configure
---help` for the details.
+## Expected result
 
-For a more or less complete script that does all this for you, see `contrib/cross-build.sh`.
+Before the compatibility adaptation, debugger activity may produce output such as:
 
-### Parallel Port Dongles
-
-If you want to access the parallel port using the PPDEV interface you
-have to specify both `--enable-parport` and `--enable-parport-ppdev`, since
-the later option is an option to the parport driver.
-
-The same is true for the `--enable-parport-giveio` option, you have to
-use both the `--enable-parport` and the `--enable-parport-giveio` option
-if you want to use giveio instead of ioperm parallel port access
-method.
-
-### Obtaining OpenOCD From Git
-
-You can download the current Git version with a Git client of your
-choice from the main repository: `git://git.code.sf.net/p/openocd/code`
-
-You may prefer to use a mirror:
-
-- <http://repo.or.cz/r/openocd.git>
-- git://repo.or.cz/openocd.git
-
-Using the Git command line client, you might use the following command
-to set up a local copy of the current repository (make sure there is no
-directory called "openocd" in the current directory):
-
-```sh
-git clone git://git.code.sf.net/p/openocd/code openocd
+```text
+Failed to read memory via abstract access.
+Failed to write memory via abstract access.
+... abstract=skipped (abstract access cmderr)
 ```
 
-Then you can update that at your convenience using `git pull`.
+After the patch, the same logical debugger operations are translated into legal aligned 32-bit ICCM transactions and those ICCM-width errors should disappear.
 
-There is also a gitweb interface, which you can use either to browse the
-repository or to download arbitrary snapshots using HTTP: <http://repo.or.cz/w/openocd.git>.
+## Design policy
 
-Snapshots are compressed tarballs of the source tree, about 1.3 MBytes
-each at this writing.
+The project follows a minimal-change policy:
 
-## Permissions delegation
+1. Prefer current upstream OpenOCD behavior.
+2. Keep VeeR/SweRV-specific behavior inside the RISC-V 0.13 backend when possible.
+3. Do not suppress real errors merely to make logs clean.
+4. Adapt only behavior that has been reproduced against hardware.
+5. Avoid porting unrelated historical `swerv-openocd` customizations.
 
-Running OpenOCD with root/administrative permissions is strongly
-discouraged for security reasons.
+## License
 
-For USB devices on GNU/Linux you should use the contrib/60-openocd.rules
-file. It probably belongs somewhere in /etc/udev/rules.d, but
-consult your operating system documentation to be sure. Do not forget
-to add yourself to the "plugdev" group.
+`riscv-013.c` is derived from OpenOCD and retains its original SPDX declaration:
 
-For parallel port adapters on GNU/Linux and FreeBSD please change your
-"ppdev" (parport* or ppi*) device node permissions accordingly.
+```text
+SPDX-License-Identifier: GPL-2.0-or-later
+```
 
-For parport adapters on Windows you need to run install_giveio.bat
-(it's also possible to use "ioperm" with Cygwin instead) to give
-ordinary users permissions for accessing the "LPT" registers directly.
+Any distribution of the modified OpenOCD source must continue to comply with the applicable GNU GPL requirements and preserve upstream attribution and license notices.
+
+OpenOCD is an upstream project; this compatibility patch is not an official OpenOCD or VeeR release.
