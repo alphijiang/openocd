@@ -115,35 +115,8 @@ Partial ICCM writes require a read-modify-write sequence. The target is expected
 
 Some VeeR/SweRV configurations require an explicit debug-memory synchronization action after modifying instruction memory before resume. That target-specific synchronization is separate from this ICCM width adaptation and may be handled in the OpenOCD target configuration.
 
-## Files
 
-```text
-README.md
-patches/
-  riscv-013_eh2.patch       patch against the tested OpenOCD source
-src/
-  riscv-013.c               patched reference source
-docs/
-  DESIGN.md                 code path and design rationale
-  TESTING.md                regression procedure
-  INTEGRATION.md            how to apply/build/use the patch
-  MAINTENANCE.md            rebase and release workflow
-```
 
-## Quick integration
-
-From an OpenOCD source tree matching the base revision:
-
-```bash
-git checkout 2741efc60
-git apply /path/to/patches/riscv-013_eh2.patch
-```
-
-Build OpenOCD using your normal upstream build procedure, then confirm:
-
-```bash
-openocd --version
-```
 
 The important regression is not merely that OpenOCD starts. Test ICCM 32-bit and sub-word accesses and a repeated software-breakpoint workflow as described in `docs/TESTING.md`.
 
