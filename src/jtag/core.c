@@ -537,8 +537,7 @@ void jtag_add_pathmove(unsigned int num_states, const enum tap_state *path)
 			return;
 		}
 
-		if (tap_state_transition(cur_state, true) != path[i] &&
-				tap_state_transition(cur_state, false) != path[i]) {
+		if (!tap_is_state_next(cur_state, path[i])) {
 			LOG_ERROR("BUG: %s -> %s isn't a valid TAP transition",
 				tap_state_name(cur_state), tap_state_name(path[i]));
 			jtag_set_error(ERROR_JTAG_TRANSITION_INVALID);
