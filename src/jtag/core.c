@@ -584,8 +584,7 @@ int jtag_add_statemove(enum tap_state goal_state)
 		}
 
 		jtag_add_pathmove(tms_count, moves);
-	} else if (tap_state_transition(cur_state, true)  == goal_state
-			|| tap_state_transition(cur_state, false) == goal_state)
+	} else if (tap_is_state_next(cur_state, goal_state))
 		jtag_add_pathmove(1, &goal_state);
 	else
 		return ERROR_FAIL;
