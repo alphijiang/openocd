@@ -275,7 +275,7 @@ int add_service(const struct service_driver *driver, const char *port,
 		c->sin.sin_family = AF_INET;
 
 		if (!bindto_name)
-			c->sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			c->sin.sin_addr.s_addr = htonl(INADDR_ANY); //allow external access
 		else {
 			hp = gethostbyname(bindto_name);
 			if (!hp) {
