@@ -1658,8 +1658,8 @@ static int register_write_direct(struct target *target, enum gdb_regno number,
 		return ERROR_FAIL;
 
 	int result = register_write_abstract(target, number, value);
-
-	if (result != ERROR_OK && target->state == TARGET_HALTED)
+    //SweRV progbuf not implenemt
+	if (result != ERROR_OK && target->state == TARGET_HALTED && has_sufficient_progbuf(target, 2))
 		result = register_write_progbuf(target, number, value);
 
 	if (cleanup_after_register_access(target, mstatus, number) != ERROR_OK)
@@ -1687,8 +1687,8 @@ static int register_read_direct(struct target *target, riscv_reg_t *value,
 		return ERROR_FAIL;
 
 	int result = register_read_abstract(target, value, number);
-
-	if (result != ERROR_OK && target->state == TARGET_HALTED)
+    //SweRV not implement progbuf
+	if (result != ERROR_OK && target->state == TARGET_HALTED && has_sufficient_progbuf(target, 2))
 		result = register_read_progbuf(target, value, number);
 
 	if (cleanup_after_register_access(target, mstatus, number) != ERROR_OK)
@@ -4754,7 +4754,7 @@ access_memory_abstract(struct target *target, const struct riscv_mem_access_args
 	assert(riscv_mem_access_is_valid(args));
 
 	/*
-	 * EH2 ICCM logical accesses are translated below to aligned 32-bit
+	 * SweRV ICCM logical accesses are translated below to aligned 32-bit
 	 * transactions, so do not reject them based on the generic abstract
 	 * command size/increment restrictions.
 	 */
