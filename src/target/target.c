@@ -2088,13 +2088,19 @@ int target_alloc_working_area_try(struct target *target, uint32_t size, struct w
 	if (target->backup_working_area) {
 		if (!c->backup) {
 			c->backup = malloc(c->size);
-			if (!c->backup)
+			if (!c->backup) {
+				LOG_TARGET_ERROR(target, "No memory for working area backup");
+				target_merge_working_areas(target);
 				return ERROR_FAIL;
+			}
 		}
 
 		int retval = target_read_memory(target, c->address, 4, c->size / 4, c->backup);
-		if (retval != ERROR_OK)
+		if (retval != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Working area backup failed");
+			target_merge_working_areas(target);
 			return retval;
+		}
 	}
 
 	/* mark as used, and return the new (reused) area */
@@ -2122,31 +2128,29 @@ int target_alloc_working_area(struct target *target, uint32_t size, struct worki
 
 static int target_restore_working_area(struct target *target, struct working_area *area)
 {
-	int retval = ERROR_OK;
+	if (!target->backup_working_area || !area->backup)
+		return ERROR_OK;
 
-	if (target->backup_working_area && area->backup) {
-		retval = target_write_memory(target, area->address, 4, area->size / 4, area->backup);
-		if (retval != ERROR_OK)
-			LOG_ERROR("failed to restore %" PRIu32 " bytes of working area at address " TARGET_ADDR_FMT,
-					area->size, area->address);
+	int retval = target_write_memory(target, area->address, 4,
+									 area->size / 4, area->backup);
+	if (retval != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "failed to restore %" PRIu32
+						 " bytes of working area at address " TARGET_ADDR_FMT,
+						 area->size, area->address);
+		LOG_TARGET_INFO(target, "'resume' would fail, reset the target");
 	}
-
 	return retval;
 }
 
 /* Restore the area's backup memory, if any, and return the area to the allocation pool */
-static int target_free_working_area_restore(struct target *target, struct working_area *area, int restore)
+static int target_free_working_area_restore(struct target *target, struct working_area *area, bool restore)
 {
 	if (!area || area->free)
 		return ERROR_OK;
 
 	int retval = ERROR_OK;
-	if (restore) {
+	if (restore)
 		retval = target_restore_working_area(target, area);
-		/* REVISIT: Perhaps the area should be freed even if restoring fails. */
-		if (retval != ERROR_OK)
-			return retval;
-	}
 
 	area->free = true;
 
@@ -2169,13 +2173,13 @@ static int target_free_working_area_restore(struct target *target, struct workin
 
 int target_free_working_area(struct target *target, struct working_area *area)
 {
-	return target_free_working_area_restore(target, area, 1);
+	return target_free_working_area_restore(target, area, true);
 }
 
 /* free resources and restore memory, if restoring memory fails,
  * free up resources anyway
  */
-static void target_free_all_working_areas_restore(struct target *target, int restore)
+static void target_free_all_working_areas_restore(struct target *target, bool restore)
 {
 	struct working_area *c = target->working_areas;
 
@@ -2201,7 +2205,7 @@ static void target_free_all_working_areas_restore(struct target *target, int res
 
 void target_free_all_working_areas(struct target *target)
 {
-	target_free_all_working_areas_restore(target, 1);
+	target_free_all_working_areas_restore(target, true);
 
 	/* Now we have none or only one working area marked as free */
 	if (target->working_areas) {
@@ -4899,6 +4903,7 @@ enum target_cfg_param {
 	TCFG_ENDIAN,
 	TCFG_COREID,
 	TCFG_CHAIN_POSITION,
+	TCFG_TAP,
 	TCFG_DBGBASE,
 	TCFG_RTOS,
 	TCFG_DEFER_EXAMINE,
@@ -4916,6 +4921,7 @@ static struct nvp nvp_config_opts[] = {
 	{ .name = "-endian",           .value = TCFG_ENDIAN },
 	{ .name = "-coreid",           .value = TCFG_COREID },
 	{ .name = "-chain-position",   .value = TCFG_CHAIN_POSITION },
+	{ .name = "-tap",              .value = TCFG_TAP },
 	{ .name = "-dbgbase",          .value = TCFG_DBGBASE },
 	{ .name = "-rtos",             .value = TCFG_RTOS },
 	{ .name = "-defer-examine",    .value = TCFG_DEFER_EXAMINE },
@@ -5181,9 +5187,12 @@ static COMMAND_HELPER(target_configure, struct target *target, unsigned int inde
 			break;
 
 		case TCFG_CHAIN_POSITION:
+			LOG_TARGET_WARNING(target, "DEPRECATED! '-chain-position' will be removed in the future, use '-tap' instead");
+			/* fallthrough */
+		case TCFG_TAP:
 			if (is_configure) {
 				if (target->has_dap) {
-					command_print(CMD, "target requires -dap parameter instead of -chain-position!");
+					command_print(CMD, "target requires -dap parameter instead of -tap");
 					return ERROR_COMMAND_ARGUMENT_INVALID;
 				}
 
@@ -5437,7 +5446,7 @@ COMMAND_HANDLER(handle_target_reset)
 	/* determine if we should halt or not. */
 	target->reset_halt = (a != 0);
 	/* When this happens - all workareas are invalid. */
-	target_free_all_working_areas_restore(target, 0);
+	target_free_all_working_areas_restore(target, false);
 
 	/* do the assert */
 	if (n->value == NVP_ASSERT) {
@@ -5926,7 +5935,7 @@ COMMAND_HANDLER(handle_target_create)
 			}
 		} else {
 			if (!target->tap_configured) {
-				command_print(CMD, "-chain-position ?name? required when creating target");
+				command_print(CMD, "-tap ?name? required when creating target");
 				retval = ERROR_COMMAND_ARGUMENT_INVALID;
 			}
 		}
