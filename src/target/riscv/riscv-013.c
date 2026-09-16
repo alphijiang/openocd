@@ -34,6 +34,7 @@
 #include "batch.h"
 #include "debug_reg_printer.h"
 #include "field_helpers.h"
+
 static int riscv013_on_step_or_resume(struct target *target, bool step);
 static int riscv013_step_or_resume_current_hart(struct target *target,
 		bool step);
