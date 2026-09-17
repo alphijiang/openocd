@@ -135,6 +135,9 @@ struct flash_driver {
 	 * "bank->base + offset", while the physical address is
 	 * dependent upon current target MMU mappings.
 	 *
+	 * If the flash does not need device specific read processing,
+	 * set method to NULL and default_flash_read() will be used.
+	 *
 	 * @param bank The bank to read.
 	 * @param buffer The data bytes read.
 	 * @param offset The offset into the chip to read.
@@ -175,6 +178,9 @@ struct flash_driver {
 	 * When called, the driver routine must perform the required
 	 * checks and then set the @c flash_sector::is_erased field
 	 * for each of the flash banks's sectors.
+	 *
+	 * If the flash does not need device specific erase_check
+	 * set method to NULL and default_flash_blank_check() will be used.
 	 *
 	 * @param bank The bank to check
 	 * @returns ERROR_OK if successful; otherwise, an error code.
